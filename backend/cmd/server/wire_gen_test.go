@@ -67,6 +67,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		pricingSvc,
 		emailQueueSvc,
 		billingCacheSvc,
+		nil, // openAIRegister
 		&service.UsageRecordWorkerPool{},
 		&service.SubscriptionService{},
 		oauthSvc,

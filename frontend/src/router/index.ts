@@ -303,6 +303,16 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/openai-register',
+    name: 'AdminOpenAIRegister',
+    component: () => import('@/views/admin/OpenAIRegisterView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'OpenAI注册机'
+    }
+  },
+  {
     path: '/admin/announcements',
     name: 'AdminAnnouncements',
     component: () => import('@/views/admin/AnnouncementsView.vue'),

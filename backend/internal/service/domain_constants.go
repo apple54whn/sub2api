@@ -234,6 +234,9 @@ const (
 
 	// SettingKeyBackendModeEnabled Backend 模式：禁用用户注册和自助服务，仅管理员可登录
 	SettingKeyBackendModeEnabled = "backend_mode_enabled"
+
+	// SettingKeyOpenAIRegisterSettings OpenAI 注册机配置（JSON）
+	SettingKeyOpenAIRegisterSettings = "openai_register_settings"
 )
 
 // AdminAPIKeyPrefix is the prefix for admin API keys (distinct from user "sk-" keys).

@@ -55,6 +55,9 @@ func RegisterAdminRoutes(
 		// 系统设置
 		registerSettingsRoutes(admin, h)
 
+		// OpenAI 注册机
+		registerOpenAIRegisterRoutes(admin, h)
+
 		// 数据管理
 		registerDataManagementRoutes(admin, h)
 
@@ -200,6 +203,16 @@ func registerDashboardRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		dashboard.POST("/api-keys-usage", h.Admin.Dashboard.GetBatchAPIKeysUsage)
 		dashboard.GET("/user-breakdown", h.Admin.Dashboard.GetUserBreakdown)
 		dashboard.POST("/aggregation/backfill", h.Admin.Dashboard.BackfillAggregation)
+	}
+}
+
+func registerOpenAIRegisterRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	openAIRegister := admin.Group("/openai-register")
+	{
+		openAIRegister.GET("/settings", h.Admin.OpenAIRegister.GetSettings)
+		openAIRegister.PUT("/settings", h.Admin.OpenAIRegister.UpdateSettings)
+		openAIRegister.GET("/runtime", h.Admin.OpenAIRegister.GetRuntime)
+		openAIRegister.POST("/checks/run", h.Admin.OpenAIRegister.RunCheck)
 	}
 }
 

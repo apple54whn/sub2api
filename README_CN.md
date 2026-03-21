@@ -265,6 +265,12 @@ docker compose -f docker-compose.local.yml logs -f sub2api
 
 **推荐：** 使用 `docker-compose.local.yml`（脚本部署）以便更轻松地管理数据。
 
+#### 从本地 fork 构建镜像，但仍然在独立 deploy 目录启动
+
+如果你在本地 fork 中开发功能，但又想继续在独立的 `sub2api-deploy` 目录执行 `docker compose up -d --build`，推荐把 deploy 目录中的 `sub2api` 服务改为本地 `build`，而不是继续拉 `weishaw/sub2api:latest`。
+
+完整步骤见：[deploy/LOCAL_FORK_DEPLOY_CN.md](deploy/LOCAL_FORK_DEPLOY_CN.md)
+
 #### 启用“数据管理”功能（datamanagementd）
 
 如需启用管理后台“数据管理”，需要额外部署宿主机数据管理进程 `datamanagementd`。
