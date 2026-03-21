@@ -2,9 +2,9 @@
   <AppLayout>
     <div class="mx-auto max-w-6xl space-y-6">
       <div class="card p-6">
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">OpenAI注册机</h1>
+        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">账号检测</h1>
         <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
-          当前先落地“账号检测线程”。配置保存在数据库 `settings` 表，检测结果直接回写账号状态和账号扩展字段。
+          支持定时检测 OpenAI OAuth 账号状态，并可直接选择 IP 管理中的代理发起底层检测请求，避免依赖全局代理。
         </p>
       </div>
 
@@ -34,7 +34,7 @@
               <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">检测范围</label>
               <select v-model="form.scope" class="input w-full">
                 <option value="all_openai_oauth">全部 OpenAI OAuth 账号</option>
-                <option value="managed_only">仅受注册机管理的账号</option>
+                <option value="managed_only">仅受托管账号</option>
               </select>
             </div>
 
@@ -46,6 +46,14 @@
             <div>
               <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">请求超时（秒）</label>
               <input v-model.number="form.request_timeout_seconds" type="number" min="5" max="120" class="input w-full" />
+            </div>
+
+            <div>
+              <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">检测代理</label>
+              <ProxySelector v-model="form.check_proxy_id" :proxies="proxies" />
+              <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                可从 IP 管理中选择任一代理；未选择时优先沿用账号绑定代理，没有则直连。
+              </p>
             </div>
 
             <div>
@@ -235,6 +243,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 import AppLayout from '@/components/layout/AppLayout.vue'
+import ProxySelector from '@/components/common/ProxySelector.vue'
 import { adminAPI } from '@/api/admin'
 import type {
   OpenAIRegisterCheckResult,
@@ -243,6 +252,7 @@ import type {
   OpenAIRegisterSettings,
   OpenAIRegisterSummary
 } from '@/api/admin/openaiRegister'
+import type { Proxy } from '@/types'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
@@ -250,6 +260,7 @@ const appStore = useAppStore()
 const loading = ref(true)
 const saving = ref(false)
 const running = ref(false)
+const proxies = ref<Proxy[]>([])
 const runtime = ref<OpenAIRegisterRuntime | null>(null)
 const checkResult = ref<OpenAIRegisterCheckRunResult | null>(null)
 const runtimePollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
@@ -263,13 +274,18 @@ type OpenAIRegisterResultRow = {
   action: OpenAIRegisterCheckResult['action']
 }
 
-const form = reactive<OpenAIRegisterSettings>({
+type OpenAIRegisterForm = OpenAIRegisterSettings & {
+  check_proxy_id: number | null
+}
+
+const form = reactive<OpenAIRegisterForm>({
   auto_check_enabled: false,
   check_interval_seconds: 900,
   request_timeout_seconds: 20,
   usage_threshold_percent: 90,
   inactive_on_invalid: true,
-  scope: 'all_openai_oauth'
+  scope: 'all_openai_oauth',
+  check_proxy_id: null
 })
 
 const latestSummary = computed<OpenAIRegisterSummary | null>(() => {
@@ -376,17 +392,36 @@ async function loadRuntime() {
 async function loadPageData() {
   loading.value = true
   try {
-    const [settings, runtimeData] = await Promise.all([
+    const [settingsResult, runtimeResult, proxiesResult] = await Promise.allSettled([
       adminAPI.openAIRegister.getSettings(),
-      adminAPI.openAIRegister.getRuntime()
+      adminAPI.openAIRegister.getRuntime(),
+      adminAPI.proxies.getAll()
     ])
-    Object.assign(form, settings)
-    runtime.value = runtimeData
-    if (runtimeData.running) {
+
+    if (settingsResult.status !== 'fulfilled') {
+      throw settingsResult.reason
+    }
+    if (runtimeResult.status !== 'fulfilled') {
+      throw runtimeResult.reason
+    }
+
+    Object.assign(form, settingsResult.value, {
+      check_proxy_id: settingsResult.value.check_proxy_id ?? null
+    })
+    runtime.value = runtimeResult.value
+
+    if (proxiesResult.status === 'fulfilled') {
+      proxies.value = proxiesResult.value
+    } else {
+      proxies.value = []
+      appStore.showError(proxiesResult.reason?.message || '加载代理列表失败，当前仅可使用账号绑定代理或直连')
+    }
+
+    if (runtimeResult.value.running) {
       startRuntimePolling()
     }
   } catch (error: any) {
-    appStore.showError(error?.message || '加载 OpenAI 注册机配置失败')
+    appStore.showError(error?.message || '加载账号检测配置失败')
   } finally {
     loading.value = false
   }
@@ -395,11 +430,16 @@ async function loadPageData() {
 async function saveSettings() {
   saving.value = true
   try {
-    const saved = await adminAPI.openAIRegister.updateSettings({ ...form })
-    Object.assign(form, saved)
-    appStore.showSuccess('OpenAI 注册机配置已保存')
+    const saved = await adminAPI.openAIRegister.updateSettings({
+      ...form,
+      check_proxy_id: form.check_proxy_id ?? null
+    })
+    Object.assign(form, saved, {
+      check_proxy_id: saved.check_proxy_id ?? null
+    })
+    appStore.showSuccess('账号检测配置已保存')
   } catch (error: any) {
-    appStore.showError(error?.message || '保存 OpenAI 注册机配置失败')
+    appStore.showError(error?.message || '保存账号检测配置失败')
   } finally {
     saving.value = false
   }

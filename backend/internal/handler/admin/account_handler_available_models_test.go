@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -58,13 +61,17 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthUsesExplicitModelMapping(t 
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var resp struct {
-		Data []struct {
-			ID string `json:"id"`
+		Data struct {
+			Models []struct {
+				ID string `json:"id"`
+			} `json:"models"`
+			DefaultModelID string `json:"default_model_id"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Len(t, resp.Data, 1)
-	require.Equal(t, "gpt-5", resp.Data[0].ID)
+	require.Len(t, resp.Data.Models, 1)
+	require.Equal(t, "gpt-5", resp.Data.Models[0].ID)
+	require.Equal(t, "gpt-5", resp.Data.DefaultModelID)
 }
 
 func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefaults(t *testing.T) {
@@ -95,11 +102,79 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var resp struct {
-		Data []struct {
-			ID string `json:"id"`
+		Data struct {
+			Models []struct {
+				ID string `json:"id"`
+			} `json:"models"`
+			DefaultModelID string `json:"default_model_id"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.NotEmpty(t, resp.Data)
-	require.NotEqual(t, "gpt-5", resp.Data[0].ID)
+	require.NotEmpty(t, resp.Data.Models)
+	require.NotEqual(t, "gpt-5", resp.Data.Models[0].ID)
+	require.Equal(t, openai.DefaultTestModel, resp.Data.DefaultModelID)
+}
+
+func TestAccountHandlerGetAvailableModels_ClaudeOAuthReturnsPlatformDefaultModel(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       44,
+			Name:     "claude-oauth",
+			Platform: service.PlatformClaude,
+			Type:     service.AccountTypeOAuth,
+			Status:   service.StatusActive,
+		},
+	}
+	router := setupAvailableModelsRouter(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/44/models", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Data struct {
+			Models []struct {
+				ID string `json:"id"`
+			} `json:"models"`
+			DefaultModelID string `json:"default_model_id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Data.Models)
+	require.Equal(t, claude.DefaultTestModel, resp.Data.DefaultModelID)
+}
+
+func TestAccountHandlerGetAvailableModels_GeminiOAuthReturnsPlatformDefaultModel(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       45,
+			Name:     "gemini-oauth",
+			Platform: service.PlatformGemini,
+			Type:     service.AccountTypeOAuth,
+			Status:   service.StatusActive,
+		},
+	}
+	router := setupAvailableModelsRouter(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/45/models", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Data struct {
+			Models []struct {
+				ID string `json:"id"`
+			} `json:"models"`
+			DefaultModelID string `json:"default_model_id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Data.Models)
+	require.Equal(t, geminicli.DefaultTestModel, resp.Data.DefaultModelID)
 }

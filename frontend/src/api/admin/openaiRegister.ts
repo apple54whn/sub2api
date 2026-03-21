@@ -7,6 +7,7 @@ export interface OpenAIRegisterSettings {
   usage_threshold_percent: number
   inactive_on_invalid: boolean
   scope: 'all_openai_oauth' | 'managed_only'
+  check_proxy_id?: number | null
 }
 
 export interface OpenAIRegisterSummary {

@@ -1202,8 +1202,8 @@ const handleSchedule = async (a: Account) => {
   scheduleModelOptions.value = []
   showSchedulePanel.value = true
   try {
-    const models = await adminAPI.accounts.getAvailableModels(a.id)
-    scheduleModelOptions.value = models.map((m: ClaudeModel) => ({ value: m.id, label: m.display_name || m.id }))
+    const result = await adminAPI.accounts.getAvailableModels(a.id)
+    scheduleModelOptions.value = (result.models ?? []).map((m: ClaudeModel) => ({ value: m.id, label: m.display_name || m.id }))
   } catch {
     scheduleModelOptions.value = []
   }

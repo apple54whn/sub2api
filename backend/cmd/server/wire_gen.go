@@ -182,7 +182,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	soraQuotaService := service.NewSoraQuotaService(userRepository, groupRepository, settingService)
 	soraGenerationService := service.NewSoraGenerationService(soraGenerationRepository, soraS3Storage, soraQuotaService)
 	settingHandler := admin.NewSettingHandler(settingService, emailService, turnstileService, opsService, soraS3Storage)
-	openAIRegisterService := service.ProvideOpenAIRegisterService(accountRepository, settingRepository)
+	openAIRegisterService := service.ProvideOpenAIRegisterService(accountRepository, settingRepository, proxyRepository)
 	openAIRegisterHandler := admin.NewOpenAIRegisterHandler(openAIRegisterService)
 	opsHandler := admin.NewOpsHandler(opsService)
 	updateCache := repository.NewUpdateCache(redisClient)

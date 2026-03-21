@@ -73,6 +73,7 @@ func TestOpenAIRegisterService_GetSettings_DefaultsOnMissingSetting(t *testing.T
 	require.Equal(t, 90, settings.UsageThresholdPct)
 	require.True(t, settings.InactiveOnInvalid)
 	require.Equal(t, OpenAIRegisterScopeAllOpenAIOAuth, settings.Scope)
+	require.Nil(t, settings.CheckProxyID)
 }
 
 func TestOpenAIRegisterService_RunCheck_InvalidAccountSetsInactive(t *testing.T) {
@@ -164,6 +165,74 @@ func TestOpenAIRegisterService_RunCheck_HighUsageOnlyUpdatesExtra(t *testing.T) 
 	require.Empty(t, repo.updatedAccounts)
 	require.Equal(t, int64(102), repo.updatedExtraID)
 	require.Equal(t, openAIRegisterStatusHighUsage, repo.updatedExtra["openai_register_check_status"])
+}
+
+func TestOpenAIRegisterService_RunCheck_UsesSelectedCheckProxy(t *testing.T) {
+	proxyID := int64(7)
+	account := Account{
+		ID:       104,
+		Name:     "oa-4",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		Credentials: map[string]any{
+			"access_token":       "token-4",
+			"chatgpt_account_id": "acct-4",
+		},
+		Proxy: &Proxy{
+			Protocol: "http",
+			Host:     "account-proxy.local",
+			Port:     7890,
+		},
+	}
+	repo := &openAIRegisterAccountRepoStub{listAccounts: []Account{account}}
+
+	settingsRaw, _ := json.Marshal(&OpenAIRegisterSettings{
+		CheckIntervalSeconds: 900,
+		RequestTimeoutSecs:   15,
+		UsageThresholdPct:    90,
+		InactiveOnInvalid:    true,
+		Scope:                OpenAIRegisterScopeAllOpenAIOAuth,
+		CheckProxyID:         &proxyID,
+	})
+	svc := NewOpenAIRegisterService(repo, &settingRepoStub{values: map[string]string{
+		SettingKeyOpenAIRegisterSettings: string(settingsRaw),
+	}})
+	svc.proxyRepo = &mockProxyRepoForOAuth{
+		getByIDFunc: func(_ context.Context, id int64) (*Proxy, error) {
+			require.Equal(t, proxyID, id)
+			return &Proxy{
+				Protocol: "http",
+				Host:     "managed-proxy.local",
+				Port:     8080,
+			}, nil
+		},
+	}
+
+	var capturedProxyURL string
+	svc.clientFactory = func(opts httpclient.Options) (*http.Client, error) {
+		capturedProxyURL = opts.ProxyURL
+		return &http.Client{
+			Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body: io.NopCloser(strings.NewReader(
+						`{"rate_limit":{"primary_window":{"used_percent":10}}}`,
+					)),
+					Header: http.Header{
+						"Content-Type": []string{"application/json"},
+					},
+				}, nil
+			}),
+		}, nil
+	}
+	svc.usageURL = "https://chatgpt.com/backend-api/wham/usage"
+
+	result, err := svc.RunCheck(context.Background(), &OpenAIRegisterRunCheckInput{Trigger: "manual"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "http://managed-proxy.local:8080", capturedProxyURL)
+	require.Equal(t, 1, result.Summary.OK)
 }
 
 func TestOpenAIRegisterService_RunCheck_ExposesRuntimeProgress(t *testing.T) {

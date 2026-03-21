@@ -53,6 +53,7 @@ type OpenAIRegisterSettings struct {
 	UsageThresholdPct    int    `json:"usage_threshold_percent"`
 	InactiveOnInvalid    bool   `json:"inactive_on_invalid"`
 	Scope                string `json:"scope"`
+	CheckProxyID         *int64 `json:"check_proxy_id,omitempty"`
 }
 
 func DefaultOpenAIRegisterSettings() *OpenAIRegisterSettings {
@@ -124,6 +125,7 @@ type OpenAIRegisterRunCheckInput struct {
 type OpenAIRegisterService struct {
 	accountRepo AccountRepository
 	settingRepo SettingRepository
+	proxyRepo   ProxyRepository
 
 	clientFactory openAIRegisterClientFactory
 	usageURL      string
@@ -151,8 +153,9 @@ func NewOpenAIRegisterService(accountRepo AccountRepository, settingRepo Setting
 	}
 }
 
-func ProvideOpenAIRegisterService(accountRepo AccountRepository, settingRepo SettingRepository) *OpenAIRegisterService {
+func ProvideOpenAIRegisterService(accountRepo AccountRepository, settingRepo SettingRepository, proxyRepo ProxyRepository) *OpenAIRegisterService {
 	svc := NewOpenAIRegisterService(accountRepo, settingRepo)
+	svc.proxyRepo = proxyRepo
 	svc.Start()
 	return svc
 }
@@ -376,6 +379,10 @@ func (s *OpenAIRegisterService) runCheck(
 	if err != nil {
 		return nil, err
 	}
+	checkProxyURL, err := s.resolveOpenAIRegisterCheckProxyURL(ctx, settings.CheckProxyID)
+	if err != nil {
+		return nil, err
+	}
 
 	runResult := &OpenAIRegisterCheckRunResult{
 		Summary: OpenAIRegisterSummary{
@@ -391,7 +398,7 @@ func (s *OpenAIRegisterService) runCheck(
 	for i := range accounts {
 		account := &accounts[i]
 		s.markRuntimeAccountChecking(account)
-		checkResult := s.inspectAccount(ctx, settings, account)
+		checkResult := s.inspectAccount(ctx, settings, account, checkProxyURL)
 		runResult.Results = append(runResult.Results, checkResult)
 		s.markRuntimeAccountChecked(checkResult)
 
@@ -467,7 +474,12 @@ func (s *OpenAIRegisterService) loadCheckAccounts(ctx context.Context, accountID
 	return result, nil
 }
 
-func (s *OpenAIRegisterService) inspectAccount(ctx context.Context, settings *OpenAIRegisterSettings, account *Account) OpenAIRegisterCheckResult {
+func (s *OpenAIRegisterService) inspectAccount(
+	ctx context.Context,
+	settings *OpenAIRegisterSettings,
+	account *Account,
+	checkProxyURL string,
+) OpenAIRegisterCheckResult {
 	result := OpenAIRegisterCheckResult{
 		AccountID: account.ID,
 		Name:      account.Name,
@@ -499,7 +511,7 @@ func (s *OpenAIRegisterService) inspectAccount(ctx context.Context, settings *Op
 	}
 
 	client, err := s.clientFactory(httpclient.Options{
-		ProxyURL:              openAIRegisterProxyURL(account),
+		ProxyURL:              openAIRegisterCheckProxyURL(account, checkProxyURL),
 		Timeout:               time.Duration(settings.RequestTimeoutSecs) * time.Second,
 		ResponseHeaderTimeout: time.Duration(settings.RequestTimeoutSecs) * time.Second,
 	})
@@ -619,6 +631,9 @@ func normalizeOpenAIRegisterSettings(settings *OpenAIRegisterSettings) {
 	if settings == nil {
 		return
 	}
+	if settings.CheckProxyID != nil && *settings.CheckProxyID <= 0 {
+		settings.CheckProxyID = nil
+	}
 	if settings.CheckIntervalSeconds < 60 {
 		settings.CheckIntervalSeconds = 60
 	}
@@ -697,6 +712,34 @@ func isManagedByOpenAIRegister(extra map[string]any) bool {
 	}
 	value, _ := extra["managed_by"].(string)
 	return strings.EqualFold(strings.TrimSpace(value), openAIRegisterManagedByTag)
+}
+
+func (s *OpenAIRegisterService) resolveOpenAIRegisterCheckProxyURL(ctx context.Context, proxyID *int64) (string, error) {
+	if proxyID == nil {
+		return "", nil
+	}
+	if s == nil || s.proxyRepo == nil {
+		return "", infraerrors.InternalServer("OPENAI_REGISTER_PROXY_REPO_REQUIRED", "proxy repository is required")
+	}
+
+	proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
+	if err != nil {
+		if errors.Is(err, ErrProxyNotFound) {
+			return "", nil
+		}
+		return "", fmt.Errorf("get check proxy: %w", err)
+	}
+	if proxy == nil {
+		return "", nil
+	}
+	return proxy.URL(), nil
+}
+
+func openAIRegisterCheckProxyURL(account *Account, configuredProxyURL string) string {
+	if trimmed := strings.TrimSpace(configuredProxyURL); trimmed != "" {
+		return trimmed
+	}
+	return openAIRegisterProxyURL(account)
 }
 
 func openAIRegisterProxyURL(account *Account) string {

@@ -309,7 +309,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
-      title: 'OpenAI注册机'
+      title: '账号检测'
     }
   },
   {

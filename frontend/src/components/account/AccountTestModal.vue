@@ -312,19 +312,17 @@ const loadAvailableModels = async () => {
   loadingModels.value = true
   selectedModelId.value = '' // Reset selection before loading
   try {
-    const models = await adminAPI.accounts.getAvailableModels(props.account.id)
+    const result = await adminAPI.accounts.getAvailableModels(props.account.id)
+    const models = result.models ?? []
     availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
       ? sortTestModels(models)
       : models
-    // Default selection by platform
-    if (availableModels.value.length > 0) {
-      if (props.account.platform === 'gemini') {
-        selectedModelId.value = availableModels.value[0].id
-      } else {
-        // Try to select Sonnet as default, otherwise use first model
-        const sonnetModel = availableModels.value.find((m) => m.id.includes('sonnet'))
-        selectedModelId.value = sonnetModel?.id || availableModels.value[0].id
-      }
+
+    const backendDefaultModelId = result.default_model_id?.trim() ?? ''
+    if (backendDefaultModelId && availableModels.value.some((model) => model.id === backendDefaultModelId)) {
+      selectedModelId.value = backendDefaultModelId
+    } else if (availableModels.value.length > 0) {
+      selectedModelId.value = availableModels.value[0].id
     }
   } catch (error) {
     console.error('Failed to load available models:', error)

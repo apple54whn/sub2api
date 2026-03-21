@@ -196,6 +196,11 @@ export async function refreshCredentials(id: number): Promise<Account> {
   return data
 }
 
+export interface AvailableModelsResponse {
+  models: ClaudeModel[]
+  default_model_id?: string
+}
+
 /**
  * Get account usage statistics
  * @param id - Account ID
@@ -430,8 +435,8 @@ export async function setSchedulable(id: number, schedulable: boolean): Promise<
  * @param id - Account ID
  * @returns List of available models for this account
  */
-export async function getAvailableModels(id: number): Promise<ClaudeModel[]> {
-  const { data } = await apiClient.get<ClaudeModel[]>(`/admin/accounts/${id}/models`)
+export async function getAvailableModels(id: number): Promise<AvailableModelsResponse> {
+  const { data } = await apiClient.get<AvailableModelsResponse>(`/admin/accounts/${id}/models`)
   return data
 }
 

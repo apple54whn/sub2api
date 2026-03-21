@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1723,6 +1724,18 @@ func (h *AccountHandler) SetSchedulable(c *gin.Context) {
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
+type availableTestModel struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	DisplayName string `json:"display_name"`
+	CreatedAt   string `json:"created_at,omitempty"`
+}
+
+type availableTestModelsResponse struct {
+	Models         []availableTestModel `json:"models"`
+	DefaultModelID string               `json:"default_model_id,omitempty"`
+}
+
 // GetAvailableModels handles getting available models for an account
 // GET /api/v1/admin/accounts/:id/models
 func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
@@ -1738,134 +1751,249 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
-	// Handle OpenAI accounts
+	models, defaultModelID := buildAvailableTestModels(account)
+	response.Success(c, availableTestModelsResponse{
+		Models:         models,
+		DefaultModelID: defaultModelID,
+	})
+}
+
+func buildAvailableTestModels(account *service.Account) ([]availableTestModel, string) {
+	if account == nil {
+		return nil, ""
+	}
+
 	if account.IsOpenAI() {
-		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
-		if account.IsOpenAIPassthroughEnabled() {
-			response.Success(c, openai.DefaultModels)
-			return
-		}
-
-		mapping := account.GetModelMapping()
-		if len(mapping) == 0 {
-			response.Success(c, openai.DefaultModels)
-			return
-		}
-
-		// Return mapped models
-		var models []openai.Model
-		for requestedModel := range mapping {
-			var found bool
-			for _, dm := range openai.DefaultModels {
-				if dm.ID == requestedModel {
-					models = append(models, dm)
-					found = true
-					break
-				}
-			}
-			if !found {
-				models = append(models, openai.Model{
-					ID:          requestedModel,
-					Object:      "model",
-					Type:        "model",
-					DisplayName: requestedModel,
-				})
-			}
-		}
-		response.Success(c, models)
-		return
+		models := buildOpenAIAvailableTestModels(account)
+		return models, pickDefaultModelID(models, openai.DefaultTestModel)
 	}
 
-	// Handle Gemini accounts
 	if account.IsGemini() {
-		// For OAuth accounts: return default Gemini models
-		if account.IsOAuth() {
-			response.Success(c, geminicli.DefaultModels)
-			return
-		}
-
-		// For API Key accounts: return models based on model_mapping
-		mapping := account.GetModelMapping()
-		if len(mapping) == 0 {
-			response.Success(c, geminicli.DefaultModels)
-			return
-		}
-
-		var models []geminicli.Model
-		for requestedModel := range mapping {
-			var found bool
-			for _, dm := range geminicli.DefaultModels {
-				if dm.ID == requestedModel {
-					models = append(models, dm)
-					found = true
-					break
-				}
-			}
-			if !found {
-				models = append(models, geminicli.Model{
-					ID:          requestedModel,
-					Type:        "model",
-					DisplayName: requestedModel,
-					CreatedAt:   "",
-				})
-			}
-		}
-		response.Success(c, models)
-		return
+		models := buildGeminiAvailableTestModels(account)
+		return models, pickDefaultModelID(models, geminicli.DefaultTestModel)
 	}
 
-	// Handle Antigravity accounts: return Claude + Gemini models
 	if account.Platform == service.PlatformAntigravity {
-		// 直接复用 antigravity.DefaultModels()，与 /v1/models 端点保持同步
-		response.Success(c, antigravity.DefaultModels())
-		return
+		models := convertAntigravityModels(antigravity.DefaultModels())
+		return models, pickDefaultModelID(models, "claude-sonnet-4-5", "claude-sonnet-4-6")
 	}
 
-	// Handle Sora accounts
 	if account.Platform == service.PlatformSora {
-		response.Success(c, service.DefaultSoraModels(nil))
-		return
+		models := convertSoraModels(service.DefaultSoraModels(nil))
+		return models, pickDefaultModelID(models)
 	}
 
-	// Handle Claude/Anthropic accounts
-	// For OAuth and Setup-Token accounts: return default models
-	if account.IsOAuth() {
-		response.Success(c, claude.DefaultModels)
-		return
+	models := buildClaudeAvailableTestModels(account)
+	return models, pickDefaultModelID(models, claude.DefaultTestModel)
+}
+
+func buildOpenAIAvailableTestModels(account *service.Account) []availableTestModel {
+	if account == nil {
+		return nil
+	}
+	if account.IsOpenAIPassthroughEnabled() {
+		return convertOpenAIModels(openai.DefaultModels)
 	}
 
-	// For API Key accounts: return models based on model_mapping
 	mapping := account.GetModelMapping()
 	if len(mapping) == 0 {
-		// No mapping configured, return default models
-		response.Success(c, claude.DefaultModels)
-		return
+		return convertOpenAIModels(openai.DefaultModels)
 	}
 
-	// Return mapped models (keys of the mapping are the available model IDs)
-	var models []claude.Model
-	for requestedModel := range mapping {
-		// Try to find display info from default models
-		var found bool
-		for _, dm := range claude.DefaultModels {
-			if dm.ID == requestedModel {
-				models = append(models, dm)
-				found = true
-				break
-			}
-		}
-		// If not found in defaults, create a basic entry
-		if !found {
-			models = append(models, claude.Model{
-				ID:          requestedModel,
-				Type:        "model",
-				DisplayName: requestedModel,
-				CreatedAt:   "",
-			})
+	index := make(map[string]availableTestModel, len(openai.DefaultModels))
+	for _, model := range openai.DefaultModels {
+		index[model.ID] = availableTestModel{
+			ID:          model.ID,
+			Type:        model.Type,
+			DisplayName: model.DisplayName,
 		}
 	}
 
-	response.Success(c, models)
+	return buildMappedAvailableTestModels(mapping, openai.DefaultModelIDs(), index)
+}
+
+func buildGeminiAvailableTestModels(account *service.Account) []availableTestModel {
+	if account == nil {
+		return nil
+	}
+	if account.IsOAuth() {
+		return convertGeminiModels(geminicli.DefaultModels)
+	}
+
+	mapping := account.GetModelMapping()
+	if len(mapping) == 0 {
+		return convertGeminiModels(geminicli.DefaultModels)
+	}
+
+	index := make(map[string]availableTestModel, len(geminicli.DefaultModels))
+	for _, model := range geminicli.DefaultModels {
+		index[model.ID] = availableTestModel{
+			ID:          model.ID,
+			Type:        model.Type,
+			DisplayName: model.DisplayName,
+			CreatedAt:   model.CreatedAt,
+		}
+	}
+
+	return buildMappedAvailableTestModels(mapping, geminiModelIDs(geminicli.DefaultModels), index)
+}
+
+func buildClaudeAvailableTestModels(account *service.Account) []availableTestModel {
+	if account == nil {
+		return nil
+	}
+	if account.IsOAuth() {
+		return convertClaudeModels(claude.DefaultModels)
+	}
+
+	mapping := account.GetModelMapping()
+	if len(mapping) == 0 {
+		return convertClaudeModels(claude.DefaultModels)
+	}
+
+	index := make(map[string]availableTestModel, len(claude.DefaultModels))
+	for _, model := range claude.DefaultModels {
+		index[model.ID] = availableTestModel{
+			ID:          model.ID,
+			Type:        model.Type,
+			DisplayName: model.DisplayName,
+			CreatedAt:   model.CreatedAt,
+		}
+	}
+
+	return buildMappedAvailableTestModels(mapping, claude.DefaultModelIDs(), index)
+}
+
+func buildMappedAvailableTestModels(mapping map[string]string, preferredOrder []string, index map[string]availableTestModel) []availableTestModel {
+	if len(mapping) == 0 {
+		return nil
+	}
+
+	keys := orderedMappingKeys(mapping, preferredOrder)
+	models := make([]availableTestModel, 0, len(keys))
+	for _, modelID := range keys {
+		if model, ok := index[modelID]; ok {
+			models = append(models, model)
+			continue
+		}
+		models = append(models, availableTestModel{
+			ID:          modelID,
+			Type:        "model",
+			DisplayName: modelID,
+		})
+	}
+	return models
+}
+
+func orderedMappingKeys(mapping map[string]string, preferredOrder []string) []string {
+	keys := make([]string, 0, len(mapping))
+	if len(mapping) == 0 {
+		return keys
+	}
+
+	seen := make(map[string]struct{}, len(mapping))
+	for _, modelID := range preferredOrder {
+		if _, ok := mapping[modelID]; !ok {
+			continue
+		}
+		keys = append(keys, modelID)
+		seen[modelID] = struct{}{}
+	}
+
+	remaining := make([]string, 0, len(mapping)-len(keys))
+	for modelID := range mapping {
+		if _, ok := seen[modelID]; ok {
+			continue
+		}
+		remaining = append(remaining, modelID)
+	}
+	sort.Strings(remaining)
+	return append(keys, remaining...)
+}
+
+func pickDefaultModelID(models []availableTestModel, preferredIDs ...string) string {
+	if len(models) == 0 {
+		return ""
+	}
+
+	available := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		available[model.ID] = struct{}{}
+	}
+
+	for _, modelID := range preferredIDs {
+		if strings.TrimSpace(modelID) == "" {
+			continue
+		}
+		if _, ok := available[modelID]; ok {
+			return modelID
+		}
+	}
+
+	return models[0].ID
+}
+
+func convertOpenAIModels(models []openai.Model) []availableTestModel {
+	result := make([]availableTestModel, 0, len(models))
+	for _, model := range models {
+		result = append(result, availableTestModel{
+			ID:          model.ID,
+			Type:        model.Type,
+			DisplayName: model.DisplayName,
+		})
+	}
+	return result
+}
+
+func convertGeminiModels(models []geminicli.Model) []availableTestModel {
+	result := make([]availableTestModel, 0, len(models))
+	for _, model := range models {
+		result = append(result, availableTestModel{
+			ID:          model.ID,
+			Type:        model.Type,
+			DisplayName: model.DisplayName,
+			CreatedAt:   model.CreatedAt,
+		})
+	}
+	return result
+}
+
+func convertClaudeModels(models []claude.Model) []availableTestModel {
+	result := make([]availableTestModel, 0, len(models))
+	for _, model := range models {
+		result = append(result, availableTestModel{
+			ID:          model.ID,
+			Type:        model.Type,
+			DisplayName: model.DisplayName,
+			CreatedAt:   model.CreatedAt,
+		})
+	}
+	return result
+}
+
+func convertAntigravityModels(models []antigravity.ClaudeModel) []availableTestModel {
+	result := make([]availableTestModel, 0, len(models))
+	for _, model := range models {
+		result = append(result, availableTestModel{
+			ID:          model.ID,
+			Type:        model.Type,
+			DisplayName: model.DisplayName,
+			CreatedAt:   model.CreatedAt,
+		})
+	}
+	return result
+}
+
+func convertSoraModels(models []openai.Model) []availableTestModel {
+	return convertOpenAIModels(models)
+}
+
+func geminiModelIDs(models []geminicli.Model) []string {
+	result := make([]string, 0, len(models))
+	for _, model := range models {
+		result = append(result, model.ID)
+	}
+	return result
 }
 
 // RefreshTier handles refreshing Google One tier for a single account
