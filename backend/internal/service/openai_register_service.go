@@ -115,6 +115,11 @@ type OpenAIRegisterCheckRunResult struct {
 	Results []OpenAIRegisterCheckResult `json:"results"`
 }
 
+type OpenAIRegisterCheckStartResult struct {
+	Accepted bool `json:"accepted"`
+	Running  bool `json:"running"`
+}
+
 type OpenAIRegisterRunCheckInput struct {
 	AccountIDs []int64 `json:"account_ids"`
 	Trigger    string  `json:"-"`
@@ -226,19 +231,19 @@ func (s *OpenAIRegisterService) runAutoCheckIfDue() {
 		return
 	}
 
-	s.mu.Lock()
-	if s.runtime.Running {
-		s.mu.Unlock()
+	if _, err := s.triggerCheckWithSettings(context.Background(), &OpenAIRegisterRunCheckInput{
+		Trigger: "auto",
+	}, settings); err != nil {
+		if errors.Is(err, ErrOpenAIRegisterCheckRunning) {
+			return
+		}
+		slog.Warn("openai_register.auto_check_failed", "error", err)
 		return
 	}
+
+	s.mu.Lock()
 	s.lastAutoRunAt = now
 	s.mu.Unlock()
-
-	if _, err := s.RunCheck(context.Background(), &OpenAIRegisterRunCheckInput{
-		Trigger: "auto",
-	}); err != nil && !errors.Is(err, ErrOpenAIRegisterCheckRunning) {
-		slog.Warn("openai_register.auto_check_failed", "error", err)
-	}
 }
 
 func (s *OpenAIRegisterService) GetSettings(ctx context.Context) (*OpenAIRegisterSettings, error) {
@@ -300,10 +305,23 @@ func (s *OpenAIRegisterService) GetRuntime() OpenAIRegisterRuntime {
 	return runtime
 }
 
-func (s *OpenAIRegisterService) RunCheck(ctx context.Context, input *OpenAIRegisterRunCheckInput) (*OpenAIRegisterCheckRunResult, error) {
-	if input == nil {
-		input = &OpenAIRegisterRunCheckInput{}
+func (s *OpenAIRegisterService) TriggerCheck(ctx context.Context, input *OpenAIRegisterRunCheckInput) (*OpenAIRegisterCheckStartResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
+
+	settings, err := s.GetSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.triggerCheckWithSettings(ctx, input, settings)
+}
+
+func (s *OpenAIRegisterService) RunCheck(ctx context.Context, input *OpenAIRegisterRunCheckInput) (*OpenAIRegisterCheckRunResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	input = cloneOpenAIRegisterRunCheckInput(input)
 
 	settings, err := s.GetSettings(ctx)
 	if err != nil {
@@ -311,15 +329,87 @@ func (s *OpenAIRegisterService) RunCheck(ctx context.Context, input *OpenAIRegis
 	}
 
 	startedAt := s.now().UTC()
-	trigger := strings.TrimSpace(input.Trigger)
-	if trigger == "" {
-		trigger = "manual"
+	trigger := normalizeOpenAIRegisterTrigger(input.Trigger)
+	if err := s.beginCheck(startedAt, trigger); err != nil {
+		return nil, err
+	}
+
+	runCtx := detachOpenAIRegisterRunContext(ctx)
+	result, runErr := s.runCheck(runCtx, input, settings, startedAt, trigger)
+	s.finishCheck(startedAt, result, runErr)
+	return result, runErr
+}
+
+func (s *OpenAIRegisterService) triggerCheckWithSettings(
+	ctx context.Context,
+	input *OpenAIRegisterRunCheckInput,
+	settings *OpenAIRegisterSettings,
+) (*OpenAIRegisterCheckStartResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if settings == nil {
+		return nil, infraerrors.InternalServer("OPENAI_REGISTER_SETTINGS_NOT_INITIALIZED", "openai register settings not initialized")
+	}
+
+	input = cloneOpenAIRegisterRunCheckInput(input)
+	startedAt := s.now().UTC()
+	trigger := normalizeOpenAIRegisterTrigger(input.Trigger)
+	if err := s.beginCheck(startedAt, trigger); err != nil {
+		return nil, err
+	}
+
+	runCtx := detachOpenAIRegisterRunContext(ctx)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		result, runErr := s.runCheck(runCtx, input, settings, startedAt, trigger)
+		s.finishCheck(startedAt, result, runErr)
+	}()
+
+	return &OpenAIRegisterCheckStartResult{
+		Accepted: true,
+		Running:  true,
+	}, nil
+}
+
+func detachOpenAIRegisterRunContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
+}
+
+func cloneOpenAIRegisterRunCheckInput(input *OpenAIRegisterRunCheckInput) *OpenAIRegisterRunCheckInput {
+	if input == nil {
+		return &OpenAIRegisterRunCheckInput{}
+	}
+
+	cloned := *input
+	if len(input.AccountIDs) > 0 {
+		cloned.AccountIDs = append([]int64(nil), input.AccountIDs...)
+	}
+	return &cloned
+}
+
+func normalizeOpenAIRegisterTrigger(trigger string) string {
+	normalized := strings.TrimSpace(trigger)
+	if normalized == "" {
+		return "manual"
+	}
+	return normalized
+}
+
+func (s *OpenAIRegisterService) beginCheck(startedAt time.Time, trigger string) error {
+	if s == nil {
+		return infraerrors.InternalServer("OPENAI_REGISTER_SERVICE_REQUIRED", "openai register service is required")
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.runtime.Running {
-		s.mu.Unlock()
-		return nil, ErrOpenAIRegisterCheckRunning
+		return ErrOpenAIRegisterCheckRunning
 	}
 	s.runtime.Running = true
 	s.runtime.LastStartedAt = &startedAt
@@ -331,36 +421,41 @@ func (s *OpenAIRegisterService) RunCheck(ctx context.Context, input *OpenAIRegis
 	s.runtime.CurrentAccountName = ""
 	s.runtime.CurrentAccountStarted = nil
 	s.runtime.RecentResults = nil
-	s.mu.Unlock()
+	return nil
+}
 
-	result, runErr := s.runCheck(ctx, input, settings, startedAt, trigger)
+func (s *OpenAIRegisterService) finishCheck(
+	startedAt time.Time,
+	result *OpenAIRegisterCheckRunResult,
+	runErr error,
+) {
+	if s == nil {
+		return
+	}
 
 	finishedAt := s.now().UTC()
 	durationMS := finishedAt.Sub(startedAt).Milliseconds()
-
-	s.mu.Lock()
-	s.runtime.Running = false
-	s.runtime.LastFinishedAt = &finishedAt
-	s.runtime.LastDurationMS = durationMS
-	if runErr != nil {
-		s.runtime.LastError = runErr.Error()
-	}
-	s.mu.Unlock()
 
 	if result != nil {
 		result.Summary.FinishedAt = finishedAt
 		result.Summary.DurationMS = durationMS
 	}
 
-	if runErr == nil && result != nil {
-		s.mu.Lock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.runtime.Running = false
+	s.runtime.LastFinishedAt = &finishedAt
+	s.runtime.LastDurationMS = durationMS
+	if runErr != nil {
+		s.runtime.LastError = runErr.Error()
+		return
+	}
+	s.runtime.LastError = ""
+	if result != nil {
 		summary := result.Summary
 		s.runtime.LastSummary = &summary
-		s.runtime.LastError = ""
-		s.mu.Unlock()
 	}
-
-	return result, runErr
 }
 
 func (s *OpenAIRegisterService) runCheck(
@@ -454,6 +549,7 @@ func (s *OpenAIRegisterService) loadCheckAccounts(ctx context.Context, accountID
 			"",
 			"",
 			0,
+			"",
 		)
 		if err != nil {
 			return nil, fmt.Errorf("list openai oauth accounts: %w", err)

@@ -35,6 +35,7 @@ func (r *openAIRegisterAccountRepoStub) ListWithFilters(
 	_ pagination.PaginationParams,
 	_, _, _, _ string,
 	_ int64,
+	_ string,
 ) ([]Account, *pagination.PaginationResult, error) {
 	return r.listAccounts, &pagination.PaginationResult{
 		Total:    int64(len(r.listAccounts)),
@@ -59,6 +60,22 @@ func (r *openAIRegisterAccountRepoStub) UpdateExtra(_ context.Context, id int64,
 		r.updatedExtra[key] = value
 	}
 	return nil
+}
+
+func waitOpenAIRegisterRuntimeStopped(t *testing.T, svc *OpenAIRegisterService) OpenAIRegisterRuntime {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runtime := svc.GetRuntime()
+		if !runtime.Running {
+			return runtime
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("wait openai register runtime stopped: timeout")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestOpenAIRegisterService_GetSettings_DefaultsOnMissingSetting(t *testing.T) {
@@ -310,4 +327,163 @@ func TestOpenAIRegisterService_RunCheck_ExposesRuntimeProgress(t *testing.T) {
 	require.Nil(t, runtime.CurrentAccountStarted)
 	require.Len(t, runtime.RecentResults, 1)
 	require.Equal(t, openAIRegisterStatusOK, runtime.RecentResults[0].Status)
+}
+
+func TestOpenAIRegisterService_RunCheck_DetachesFromCallerContextCancellation(t *testing.T) {
+	account := Account{
+		ID:       105,
+		Name:     "oa-5",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		Credentials: map[string]any{
+			"access_token":       "token-5",
+			"chatgpt_account_id": "acct-5",
+		},
+	}
+	repo := &openAIRegisterAccountRepoStub{listAccounts: []Account{account}}
+
+	svc := NewOpenAIRegisterService(repo, &settingRepoStub{values: map[string]string{}})
+	svc.clientFactory = func(_ httpclient.Options) (*http.Client, error) {
+		return &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				require.NoError(t, req.Context().Err())
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body: io.NopCloser(strings.NewReader(
+						`{"rate_limit":{"primary_window":{"used_percent":10}}}`,
+					)),
+					Header: http.Header{
+						"Content-Type": []string{"application/json"},
+					},
+				}, nil
+			}),
+		}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := svc.RunCheck(ctx, &OpenAIRegisterRunCheckInput{Trigger: "manual"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.Summary.OK)
+	require.Equal(t, openAIRegisterStatusOK, result.Results[0].Status)
+	require.NotContains(t, result.Results[0].Detail, "context canceled")
+}
+
+func TestOpenAIRegisterService_TriggerCheck_StartsBackgroundRun(t *testing.T) {
+	account := Account{
+		ID:       106,
+		Name:     "oa-6",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		Credentials: map[string]any{
+			"access_token":       "token-6",
+			"chatgpt_account_id": "acct-6",
+		},
+	}
+	repo := &openAIRegisterAccountRepoStub{listAccounts: []Account{account}}
+
+	svc := NewOpenAIRegisterService(repo, &settingRepoStub{values: map[string]string{}})
+
+	requestStarted := make(chan struct{}, 1)
+	releaseResponse := make(chan struct{})
+	svc.clientFactory = func(_ httpclient.Options) (*http.Client, error) {
+		return &http.Client{
+			Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+				select {
+				case requestStarted <- struct{}{}:
+				default:
+				}
+				<-releaseResponse
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body: io.NopCloser(strings.NewReader(
+						`{"rate_limit":{"primary_window":{"used_percent":10}}}`,
+					)),
+					Header: http.Header{
+						"Content-Type": []string{"application/json"},
+					},
+				}, nil
+			}),
+		}, nil
+	}
+
+	startResult, err := svc.TriggerCheck(context.Background(), &OpenAIRegisterRunCheckInput{Trigger: "manual"})
+	require.NoError(t, err)
+	require.NotNil(t, startResult)
+	require.True(t, startResult.Accepted)
+	require.True(t, startResult.Running)
+
+	<-requestStarted
+
+	runtime := svc.GetRuntime()
+	require.True(t, runtime.Running)
+	require.Equal(t, int64(106), runtime.CurrentAccountID)
+	require.Equal(t, "oa-6", runtime.CurrentAccountName)
+
+	close(releaseResponse)
+
+	runtime = waitOpenAIRegisterRuntimeStopped(t, svc)
+	require.Len(t, runtime.RecentResults, 1)
+	require.Equal(t, openAIRegisterStatusOK, runtime.RecentResults[0].Status)
+	require.NotNil(t, runtime.LastSummary)
+	require.Equal(t, 1, runtime.LastSummary.OK)
+}
+
+func TestOpenAIRegisterService_TriggerCheck_DetachesFromCallerContextCancellation(t *testing.T) {
+	account := Account{
+		ID:       107,
+		Name:     "oa-7",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		Credentials: map[string]any{
+			"access_token":       "token-7",
+			"chatgpt_account_id": "acct-7",
+		},
+	}
+	repo := &openAIRegisterAccountRepoStub{listAccounts: []Account{account}}
+
+	svc := NewOpenAIRegisterService(repo, &settingRepoStub{values: map[string]string{}})
+
+	requestStarted := make(chan struct{}, 1)
+	releaseResponse := make(chan struct{})
+	svc.clientFactory = func(_ httpclient.Options) (*http.Client, error) {
+		return &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				select {
+				case requestStarted <- struct{}{}:
+				default:
+				}
+				<-releaseResponse
+				require.NoError(t, req.Context().Err())
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body: io.NopCloser(strings.NewReader(
+						`{"rate_limit":{"primary_window":{"used_percent":10}}}`,
+					)),
+					Header: http.Header{
+						"Content-Type": []string{"application/json"},
+					},
+				}, nil
+			}),
+		}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	startResult, err := svc.TriggerCheck(ctx, &OpenAIRegisterRunCheckInput{Trigger: "manual"})
+	require.NoError(t, err)
+	require.NotNil(t, startResult)
+
+	<-requestStarted
+	cancel()
+	close(releaseResponse)
+
+	runtime := waitOpenAIRegisterRuntimeStopped(t, svc)
+	require.Len(t, runtime.RecentResults, 1)
+	require.Equal(t, openAIRegisterStatusOK, runtime.RecentResults[0].Status)
+	require.Empty(t, runtime.LastError)
 }

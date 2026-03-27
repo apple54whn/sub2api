@@ -150,8 +150,8 @@
                 <h2 class="text-lg font-semibold text-gray-900 dark:text-white">手动检测</h2>
                 <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">立即按当前配置扫描账号状态，并把结果回写到数据库。</p>
               </div>
-              <button type="button" class="btn btn-primary" :disabled="running || runtime?.running" @click="runCheck">
-                {{ running || runtime?.running ? '检测中...' : '立即检测' }}
+              <button type="button" class="btn btn-primary" :disabled="startingCheck || runtime?.running" @click="runCheck">
+                {{ startingCheck ? '启动中...' : runtime?.running ? '检测中...' : '立即检测' }}
               </button>
             </div>
 
@@ -247,7 +247,6 @@ import ProxySelector from '@/components/common/ProxySelector.vue'
 import { adminAPI } from '@/api/admin'
 import type {
   OpenAIRegisterCheckResult,
-  OpenAIRegisterCheckRunResult,
   OpenAIRegisterRuntime,
   OpenAIRegisterSettings,
   OpenAIRegisterSummary
@@ -259,10 +258,9 @@ const appStore = useAppStore()
 
 const loading = ref(true)
 const saving = ref(false)
-const running = ref(false)
+const startingCheck = ref(false)
 const proxies = ref<Proxy[]>([])
 const runtime = ref<OpenAIRegisterRuntime | null>(null)
-const checkResult = ref<OpenAIRegisterCheckRunResult | null>(null)
 const runtimePollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
 
 type OpenAIRegisterResultRow = {
@@ -289,7 +287,7 @@ const form = reactive<OpenAIRegisterForm>({
 })
 
 const latestSummary = computed<OpenAIRegisterSummary | null>(() => {
-  return checkResult.value?.summary ?? runtime.value?.last_summary ?? null
+  return runtime.value?.last_summary ?? null
 })
 
 const progressPercent = computed(() => {
@@ -350,11 +348,7 @@ const resultRows = computed<OpenAIRegisterResultRow[]>(() => {
     rows.push(currentCheckingRow.value)
   }
 
-  const finishedResults = runtimeResults.value.length > 0
-    ? runtimeResults.value
-    : (checkResult.value?.results ?? [])
-
-  rows.push(...finishedResults.map(item => ({ ...item })))
+  rows.push(...runtimeResults.value.map(item => ({ ...item })))
   return rows
 })
 
@@ -446,8 +440,7 @@ async function saveSettings() {
 }
 
 async function runCheck() {
-  running.value = true
-  checkResult.value = null
+  startingCheck.value = true
   if (runtime.value) {
     runtime.value = {
       ...runtime.value,
@@ -462,9 +455,9 @@ async function runCheck() {
   }
   startRuntimePolling()
   try {
-    checkResult.value = await adminAPI.openAIRegister.runCheck()
+    await adminAPI.openAIRegister.runCheck()
     await loadRuntime()
-    appStore.showSuccess('账号检测已完成')
+    appStore.showSuccess('账号检测任务已启动')
   } catch (error: any) {
     try {
       await loadRuntime()
@@ -476,9 +469,9 @@ async function runCheck() {
         }
       }
     }
-    appStore.showError(error?.message || '执行账号检测失败')
+    appStore.showError(error?.message || '启动账号检测失败')
   } finally {
-    running.value = false
+    startingCheck.value = false
     if (!runtime.value?.running) {
       stopRuntimePolling()
     }

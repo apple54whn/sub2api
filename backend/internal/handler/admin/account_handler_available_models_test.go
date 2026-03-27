@@ -118,13 +118,13 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 func TestAccountHandlerGetAvailableModels_ClaudeOAuthReturnsPlatformDefaultModel(t *testing.T) {
 	svc := &availableModelsAdminService{
 		stubAdminService: newStubAdminService(),
-		account: service.Account{
-			ID:       44,
-			Name:     "claude-oauth",
-			Platform: service.PlatformClaude,
-			Type:     service.AccountTypeOAuth,
-			Status:   service.StatusActive,
-		},
+			account: service.Account{
+				ID:       44,
+				Name:     "claude-oauth",
+				Platform: service.PlatformAnthropic,
+				Type:     service.AccountTypeOAuth,
+				Status:   service.StatusActive,
+			},
 	}
 	router := setupAvailableModelsRouter(svc)
 

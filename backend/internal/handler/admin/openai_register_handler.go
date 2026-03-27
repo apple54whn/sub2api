@@ -61,7 +61,7 @@ func (h *OpenAIRegisterHandler) RunCheck(c *gin.Context) {
 		return
 	}
 
-	result, err := h.openaiRegisterService.RunCheck(c.Request.Context(), &req)
+	result, err := h.openaiRegisterService.TriggerCheck(c.Request.Context(), &req)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

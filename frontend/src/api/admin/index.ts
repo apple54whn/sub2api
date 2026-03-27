@@ -25,6 +25,7 @@ import apiKeysAPI from './apiKeys'
 import scheduledTestsAPI from './scheduledTests'
 import backupAPI from './backup'
 import openAIRegisterAPI from './openaiRegister'
+import tlsFingerprintProfileAPI from './tlsFingerprintProfile'
 
 /**
  * Unified admin API object for convenient access
@@ -51,7 +52,8 @@ export const adminAPI = {
   apiKeys: apiKeysAPI,
   scheduledTests: scheduledTestsAPI,
   backup: backupAPI,
-  openAIRegister: openAIRegisterAPI
+  openAIRegister: openAIRegisterAPI,
+  tlsFingerprintProfiles: tlsFingerprintProfileAPI
 }
 
 export {
@@ -76,7 +78,8 @@ export {
   apiKeysAPI,
   scheduledTestsAPI,
   backupAPI,
-  openAIRegisterAPI
+  openAIRegisterAPI,
+  tlsFingerprintProfileAPI
 }
 
 export default adminAPI
@@ -85,3 +88,4 @@ export default adminAPI
 export type { BalanceHistoryItem } from './users'
 export type { ErrorPassthroughRule, CreateRuleRequest, UpdateRuleRequest } from './errorPassthrough'
 export type { BackupAgentHealth, DataManagementConfig } from './dataManagement'
+export type { TLSFingerprintProfile, CreateProfileRequest, UpdateProfileRequest } from './tlsFingerprintProfile'

@@ -35,9 +35,9 @@ export interface OpenAIRegisterCheckResult {
   action: 'none' | 'set_inactive'
 }
 
-export interface OpenAIRegisterCheckRunResult {
-  summary: OpenAIRegisterSummary
-  results: OpenAIRegisterCheckResult[]
+export interface OpenAIRegisterCheckStartResult {
+  accepted: boolean
+  running: boolean
 }
 
 export interface OpenAIRegisterRuntime {
@@ -71,8 +71,8 @@ export async function getRuntime(): Promise<OpenAIRegisterRuntime> {
   return data
 }
 
-export async function runCheck(payload?: { account_ids?: number[] }): Promise<OpenAIRegisterCheckRunResult> {
-  const { data } = await apiClient.post<OpenAIRegisterCheckRunResult>('/admin/openai-register/checks/run', payload ?? {})
+export async function runCheck(payload?: { account_ids?: number[] }): Promise<OpenAIRegisterCheckStartResult> {
+  const { data } = await apiClient.post<OpenAIRegisterCheckStartResult>('/admin/openai-register/checks/run', payload ?? {})
   return data
 }
 
